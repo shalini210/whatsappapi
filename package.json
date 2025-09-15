@@ -2,9 +2,9 @@
   "name": "whatsapp-sender",
   "version": "1.0.0",
   "description": "Bulk WhatsApp sender with QR login",
-  "main": "api/index.js",
+  "main": "index.js",
   "scripts": {
-    "start": "node api/index.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "express": "^4.19.2",

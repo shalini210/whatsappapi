@@ -7,11 +7,13 @@ const XLSX = require("xlsx");
 const http = require("http");
 const { Server } = require("socket.io");
 
-// Create express app
+const PORT = 3000;
+
+// Create express app + server
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "*" } // allow Vercel public site
+  cors: { origin: "*" }, // Allow Vercel or any frontend
 });
 
 app.use(express.urlencoded({ extended: true }));
@@ -21,15 +23,11 @@ app.use(express.static("public"));
 
 // WhatsApp client initialization
 const client = new Client();
-let qrGenerated = false;
 
 client.on("qr", async (qr) => {
-  if (!qrGenerated) {
-    console.log("📲 Scan QR code in browser to log in...");
-    const qrImageUrl = await qrcode.toDataURL(qr);
-    io.emit("qr", qrImageUrl);
-    qrGenerated = true;
-  }
+  console.log("📲 Scan QR code in browser to log in...");
+  const qrImageUrl = await qrcode.toDataURL(qr);
+  io.emit("qr", qrImageUrl); // Always emit fresh QR on refresh or reconnection
 });
 
 client.on("ready", () => {
@@ -37,30 +35,40 @@ client.on("ready", () => {
   io.emit("ready", true);
 });
 
+// Reset QR if disconnected
+client.on("disconnected", () => {
+  console.log("❌ WhatsApp disconnected. Reinitializing...");
+  client.initialize();
+});
+
 // API endpoint
 app.post("/send", async (req, res) => {
   try {
     let numbers = [];
 
-    // Manual input
+    // Manual input numbers
     if (req.body.numbers?.trim()) {
       numbers = req.body.numbers.split(",").map((n) => n.trim());
     }
 
-    // Excel upload
+    // Excel upload numbers
     if (req.files?.excel) {
       const workbook = XLSX.read(req.files.excel.data, { type: "buffer" });
       const sheetName = workbook.SheetNames[0];
       const data = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
-      const excelNumbers = data.map((row) => String(row[Object.keys(row)[0]]).trim());
+      const excelNumbers = data
+        .map((row) => String(row[Object.keys(row)[0]] || "").trim())
+        .filter((val) => /^\d+$/.test(val)); // keep only numeric
       numbers = numbers.concat(excelNumbers);
     }
 
-    // Clean & normalize
-    numbers = numbers
-      .map((n) => n.replace(/\D/g, ""))
-      .filter((n) => n.length >= 10)
-      .map((n) => (n.startsWith("91") ? `+${n}` : `+91${n.slice(-10)}`));
+    // Clean, normalize, deduplicate
+    numbers = [...new Set(
+      numbers
+        .map((n) => n.replace(/\D/g, ""))
+        .filter((n) => n.length >= 10)
+        .map((n) => (n.startsWith("91") ? `+${n}` : `+91${n.slice(-10)}`))
+    )];
 
     if (!numbers.length) {
       return res.status(400).json({ error: "No valid numbers found." });
@@ -71,13 +79,18 @@ app.post("/send", async (req, res) => {
     message += `
 
 🟩 *[📞 CALL US](tel:+919723625050)*  
-🟩 *[🌐 VISIT NOW](https://www.promiseacademy.co.in/)*
-`;
+🟩 *[🌐 VISIT NOW](https://www.promiseacademy.co.in/)*`;
 
-    const delay = Math.max(parseInt(req.body.delay) || 2000, 1500);
     const mediaFile = req.files?.media || null;
 
-    let sentCount = 0, skippedCount = 0, failedCount = 0;
+    if (!message.trim() && !mediaFile) {
+      return res.status(400).json({ error: "Message or media is required." });
+    }
+
+    const delay = Math.max(parseInt(req.body.delay) || 2000, 1500);
+    let sentCount = 0,
+      skippedCount = 0,
+      failedCount = 0;
 
     (async () => {
       const total = numbers.length;
@@ -106,13 +119,19 @@ app.post("/send", async (req, res) => {
           io.emit("status", `✅ (${i + 1}/${total}) Sent to ${numbers[i]}`);
         } catch (err) {
           failedCount++;
-          io.emit("status", `❌ (${i + 1}/${total}) Failed to send to ${numbers[i]}: ${err.message}`);
+          io.emit(
+            "status",
+            `❌ (${i + 1}/${total}) Failed to send to ${numbers[i]}: ${err.message}`
+          );
         }
 
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
 
-      io.emit("status", `🎉 Done! ✅ Sent: ${sentCount}, ⚠️ Skipped: ${skippedCount}, ❌ Failed: ${failedCount}`);
+      io.emit(
+        "status",
+        `🎉 Done! ✅ Sent: ${sentCount}, ⚠️ Skipped: ${skippedCount}, ❌ Failed: ${failedCount}`
+      );
     })();
 
     res.json({ status: "sending", total: numbers.length });
@@ -124,7 +143,6 @@ app.post("/send", async (req, res) => {
 
 client.initialize();
 
-// ✅ Export as Vercel handler
-module.exports = (req, res) => {
-  server.emit("request", req, res);
-};
+server.listen(PORT, () => {
+  console.log(`🚀 Server running at http://localhost:${PORT}`);
+});
